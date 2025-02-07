@@ -1,54 +1,79 @@
-import nibabel as nib
+from PIL import Image, ImageSequence
 import numpy as np
+import torch
+import torch.nn as nn
 
 import matplotlib
 import matplotlib.pyplot as plt
-matplotlib.use('TkAgg')  # Cambia el backend a TkAgg
+matplotlib.use('TkAgg')
 
-from MedicalFormatToPNG import MedicalFormatToPNGAndGenerator
 
-# El hrd brinda metadatos como dimensiones del .img
+path_gif = "./Test/OAS1_0311_MR1_mpr-1_anon_sag_66.gif"
 
-# Cargamos el contenido del hdr del .img
-img_info = nib.load("./Test/OAS1_0311_MR1_mpr-2_anon.hdr")
+# El gif consta de sola una imagen, por tanto como no es un "video" no necesitaremos recorrer la secuencia
+# de imagenes del gif y directamente se podría acceder a la imagen.
 
-# meta datos
-hdr = img_info.header
-print(hdr, "\n\n")
+gif = Image.open(path_gif)
 
-# extraemos las dimensiones del .img
-data = img_info.get_fdata()
-ExpectedDimentions = data.shape
+# Se convierte a RGB la imagen y se pasa a uint8
 
-print("Dimensiones de la img estructurada:", ExpectedDimentions)
+# u <-- sin signo
+# int8 <-- valores en el pixel range [0, 255]
+frame = np.array(gif.convert("RGB"), dtype=np.float32)
+frame_tensor = torch.tensor(frame, dtype=torch.float32).permute(2, 0, 1).unsqueeze(0)
 
-# El .img es la imagen pero puestas de forma cruda ( es como si fuera un vector unidimensional
-# con el contenido puesto secuencialmente, donde la secuencia es según a las dimensiones esperadas ),
-# el cual con el .hdr podremos hacer un reshape a ese contenido
-# para estructurar todo ese "vector" y tener el formato de la imagen en una matriz, como tambien su data type.
 
-# dataype : int16 <-- info de la meta data (usar este y no el data.dtype porque altera las dimmensiones
-# esperadas).
-dtype = np.int16
+print(frame_tensor.shape)
 
-# Extraemos el contenido del formato .img
-with open("./Test/OAS1_0311_MR1_mpr-2_anon.img") as UncompressedImg:
-    CompressedImg = np.fromfile(UncompressedImg, dtype=dtype)
 
-# Si nos damos cuenta, la dimensión es igual al producto 256*256*128 ( dimensiones esperadas, pero totalmente
-# aplanadas ).
-print("Unidimentional Vector Shape .Img", CompressedImg.shape)
+Conv2d = nn.Conv2d(in_channels=3, out_channels=3, kernel_size=3, padding=1, stride=1, bias=False)
+MaxPool2d = nn.MaxPool2d(kernel_size=2, stride=2)
+Relu = nn.ReLU()
 
-# eje x (ancho), eje y (alto), eje z (volumen), ignore
-[dimx, dimy, dimz, _] = ExpectedDimentions
 
-# (volumen x alto x ancho)
-MedicalImg = CompressedImg.reshape((dimz, dimy, dimx))
+# El filtro tiene 4 dimensiones, AxBxCxD
+# A <- # de filtros a utilizar
+# B <- # Número de canales de entrada a los que se les aplicará el filtro
+# CxD <- Matriz con la estructura y valores del filtro
 
-print(MedicalImg.shape)
+kernel = torch.tensor([[ 0, -1,  0],
+                       [-1,  4, -1],
+                       [ 0, -1,  0]], dtype=torch.float32)
 
-MedicalPngGenerator = MedicalFormatToPNGAndGenerator(MedicalImg)
 
-plt.imshow(MedicalPngGenerator[1], cmap='gray')
+# Un filtro para solo un canal, con solo una salida esperada
+
+kernel = kernel.view(1, 1, 3, 3)
+
+kernel = kernel.repeat(3, 3, 1, 1)
+
+with torch.no_grad():
+
+    # Para realizarlo óptimamente, se tiene que convertir el tensor a un parámetro de una red neuronal
+    # para que obtenga todas las propiedades de la misma (autograd y otros).
+    Conv2d.weight = nn.Parameter(kernel)
+
+# Convoluciones
+ImgFiltro1 = Conv2d(frame_tensor)
+ImgFiltro1 = Relu(ImgFiltro1)
+ImgFiltro1 = MaxPool2d(ImgFiltro1)
+
+ImgFiltro1 = Conv2d(ImgFiltro1)
+ImgFiltro1 = Relu(ImgFiltro1)
+ImgFiltro1 = MaxPool2d(ImgFiltro1)
+
+ImgFiltro1 = Conv2d(ImgFiltro1)
+ImgFiltro1 = Relu(ImgFiltro1)
+ImgFiltro1 = MaxPool2d(ImgFiltro1)
+
+
+# Ajuste de las dimensiones.
+ImgFiltro1 = ImgFiltro1.squeeze(0).permute(1, 2, 0)
+ImgFiltro1 = ((ImgFiltro1 - torch.min(ImgFiltro1)) / (torch.max(ImgFiltro1) - torch.min(ImgFiltro1)) * 255)
+ImgFiltro1 = np.round(ImgFiltro1.cpu().detach().numpy()).astype(np.uint8)
+
+print(ImgFiltro1.shape)
+
+plt.imshow(ImgFiltro1)
 plt.axis("off")
 plt.show()
